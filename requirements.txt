@@ -3,3 +3,4 @@ numpy
 Pillow
 svglib
 reportlab<4.0.0
+
