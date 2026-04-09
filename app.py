@@ -7,7 +7,7 @@ import io
 st.set_page_config(page_title="CNC 3D Maker", layout="centered")
 
 st.sidebar.title("Carving Settings")
-mode = st.sidebar.radio("Project Type:", ["Artistic (Photo)", "Logo/Text (Vector-Style)"])
+mode = st.sidebar.radio("Project Type:", ["Artistic (Photo)", "Logo/Text (Sharp Edges)"])
 
 st.title(f"🛠 CNC {mode} Generator")
 
@@ -17,17 +17,17 @@ if uploaded_file:
     # Open image and convert to Grayscale
     img = Image.open(uploaded_file).convert('L')
     
-    if mode == "Logo/Text (Vector-Style)":
-        st.info("Tip: Use a high-contrast image. The app will sharpen edges for a clean carve.")
-        # Turn image into pure Black or White (Thresholding)
+    if mode == "Logo/Text (Sharp Edges)":
+        st.info("Converting image to sharp black & white for clean vertical walls.")
+        # Any pixel darker than middle-grey becomes black, others white
         img = img.point(lambda x: 0 if x < 128 else 255, '1').convert('L')
         thickness = st.slider("Extrusion Thickness (mm)", 1, 30, 10)
         z_multiplier = thickness
     else:
-        z_multiplier = st.slider("Max Carving Depth", 0.1, 5.0, 1.0)
+        z_multiplier = st.slider("Max Carving Depth (mm)", 0.1, 10.0, 2.0)
 
-    # Resolution Control (keeps the file size safe for mobile)
-    res = st.select_slider("Resolution (Detail Level)", options=[50, 100, 150], value=100)
+    # Resolution (keeps file size small for phone downloads)
+    res = st.select_slider("Detail Level", options=[50, 100, 150], value=100)
     img = img.resize((res, res))
     data = np.array(img)
     
@@ -42,13 +42,12 @@ if uploaded_file:
         
         for r in range(rows - 1):
             for c in range(cols - 1):
-                # Calculate heights: 255 (white) is top, 0 (black) is bottom
-                # We invert it so white is high (z=multiplier) and black is low (z=0)
+                # We invert it: White pixels = High, Black pixels = Low
                 z1 = (data[r, c] / 255.0) * z_multiplier
                 z2 = (data[r+1, c] / 255.0) * z_multiplier
                 z3 = (data[r, c+1] / 255.0) * z_multiplier
                 
-                # Write STL Triangle
+                # Create the triangle face
                 stl_output.write("facet normal 0 0 0\n  outer loop\n")
                 stl_output.write(f"    vertex {r} {c} {z1}\n")
                 stl_output.write(f"    vertex {r+1} {c} {z2}\n")
@@ -61,9 +60,9 @@ if uploaded_file:
         
         st.success("Model Created!")
         st.download_button(
-            label="📥 Download STL for CNC",
+            label="📥 Download STL",
             data=stl_output.getvalue(),
             file_name="my_cnc_project.stl",
             mime="text/plain"
-            )
+        )
         
