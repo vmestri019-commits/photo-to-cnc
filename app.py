@@ -1,66 +1,69 @@
 import streamlit as st
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 import io
 
-st.set_page_config(page_title="CNC 3D Maker")
+# --- APP CONFIG ---
+st.set_page_config(page_title="CNC 3D Maker", layout="centered")
 
-st.sidebar.title("App Settings")
-mode = st.sidebar.radio("Conversion Mode:", ["Artistic (Photo)", "Vector-Style (Logo/Text)"])
+st.sidebar.title("Carving Settings")
+mode = st.sidebar.radio("Project Type:", ["Artistic (Photo)", "Logo/Text (Vector-Style)"])
 
-st.title(f"🛠 CNC {mode} Converter")
+st.title(f"🛠 CNC {mode} Generator")
 
 uploaded_file = st.file_uploader("Upload Image (JPG/PNG)", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
-    # Load and process image
+    # Open image and convert to Grayscale
     img = Image.open(uploaded_file).convert('L')
     
-    if mode == "Vector-Style (Logo/Text)":
-        st.info("Tip: Use high-contrast black & white images for best results.")
-        # Sharpen the image to make edges vertical
+    if mode == "Logo/Text (Vector-Style)":
+        st.info("Tip: Use a high-contrast image. The app will sharpen edges for a clean carve.")
+        # Turn image into pure Black or White (Thresholding)
         img = img.point(lambda x: 0 if x < 128 else 255, '1').convert('L')
-        thickness = st.slider("Extrusion Thickness (mm)", 1, 20, 5)
-        depth_val = thickness
+        thickness = st.slider("Extrusion Thickness (mm)", 1, 30, 10)
+        z_multiplier = thickness
     else:
-        depth_val = st.slider("Max Carving Depth", 0.01, 1.0, 0.2)
+        z_multiplier = st.slider("Max Carving Depth", 0.1, 5.0, 1.0)
 
-    res = st.select_slider("Resolution (Low = Faster)", options=[50, 100, 150, 200], value=100)
+    # Resolution Control (keeps the file size safe for mobile)
+    res = st.select_slider("Resolution (Detail Level)", options=[50, 100, 150], value=100)
     img = img.resize((res, res))
     data = np.array(img)
     
-    if st.button("Generate STL"):
+    st.image(img, caption="Internal 3D Map Preview", width=300)
+
+    if st.button("🚀 Generate 3D STL"):
         rows, cols = data.shape
-        stl_buffer = io.StringIO()
-        stl_buffer.write("solid cnc_mesh\n")
+        stl_output = io.StringIO()
+        stl_output.write("solid cnc_model\n")
         
-        # Progress bar for mobile users
-        bar = st.progress(0)
+        progress_bar = st.progress(0)
+        
         for r in range(rows - 1):
             for c in range(cols - 1):
-                # Map pixel brightness to Z height
-                # In Vector mode, this creates a 'cliff' effect
-                z1 = (255 - data[r, c]) * (depth_val / 255)
-                z2 = (255 - data[r+1, c]) * (depth_val / 255)
-                z3 = (255 - data[r, c+1]) * (depth_val / 255)
+                # Calculate heights: 255 (white) is top, 0 (black) is bottom
+                # We invert it so white is high (z=multiplier) and black is low (z=0)
+                z1 = (data[r, c] / 255.0) * z_multiplier
+                z2 = (data[r+1, c] / 255.0) * z_multiplier
+                z3 = (data[r, c+1] / 255.0) * z_multiplier
                 
-                # Create the triangle face
-                stl_buffer.write(f"facet normal 0 0 0\n  outer loop\n")
-                stl_buffer.write(f"    vertex {r} {c} {z1}\n")
-                stl_buffer.write(f"    vertex {r+1} {c} {z2}\n")
-                stl_buffer.write(f"    vertex {r} {c+1} {z3}\n")
-                stl_buffer.write("  endloop\nendfacet\n")
-            bar.progress((r + 1) / (rows - 1))
+                # Write STL Triangle
+                stl_output.write("facet normal 0 0 0\n  outer loop\n")
+                stl_output.write(f"    vertex {r} {c} {z1}\n")
+                stl_output.write(f"    vertex {r+1} {c} {z2}\n")
+                stl_output.write(f"    vertex {r} {c+1} {z3}\n")
+                stl_output.write("  endloop\nendfacet\n")
             
-        stl_buffer.write("endsolid cnc_mesh\n")
+            progress_bar.progress((r + 1) / (rows - 1))
+            
+        stl_output.write("endsolid cnc_model\n")
         
-        st.success("3D Model Ready!")
+        st.success("Model Created!")
         st.download_button(
-            label="📥 Download STL File",
-            data=stl_buffer.getvalue(),
-            file_name="cnc_project.stl",
+            label="📥 Download STL for CNC",
+            data=stl_output.getvalue(),
+            file_name="my_cnc_project.stl",
             mime="text/plain"
-        )
-    
-    st.image(img, caption="Preview of heightmap logic", use_column_width=True)
+            )
         
