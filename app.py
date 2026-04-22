@@ -1,4 +1,4 @@
-import streamlit as st
+ import streamlit as st
 import numpy as np
 import cv2
 from PIL import Image
@@ -8,55 +8,63 @@ import io
 st.set_page_config(page_title="V-Bit Portrait Master", layout="centered")
 
 st.title("🎯 CNC V-Bit Line Art Generator")
-st.write("Upload a portrait to create single-line vector art like your example.")
+st.write("Generating smooth, single-stroke paths for high-quality engraving.")
 
 uploaded_file = st.file_uploader("Upload Portrait", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
-    # Load image for processing
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
     
-    # 1. SIDEBAR CONTROLS
     st.sidebar.header("Tuning")
-    contrast = st.sidebar.slider("Line Detail", 50, 250, 150)
-    smooth = st.sidebar.slider("Smoothness", 1, 11, 3, step=2)
-    min_path = st.sidebar.slider("Ignore Small Noise", 10, 100, 30)
+    contrast = st.sidebar.slider("Line Detail", 50, 250, 130)
+    smooth_factor = st.sidebar.slider("Curve Smoothing", 0.1, 5.0, 1.5) # New: Controls how smooth curves are
+    min_path = st.sidebar.slider("Remove Small Noise", 10, 200, 50)
 
-    # 2. PROCESSING PIPELINE
-    # Blur to remove skin noise
-    blurred = cv2.GaussianBlur(img, (smooth, smooth), 0)
-    # Detect edges
+    # 1. Processing
+    blurred = cv2.GaussianBlur(img, (5, 5), 0)
     edges = cv2.Canny(blurred, contrast/2, contrast)
-    # Skeletonize: Shrink thick edges to 1-pixel centerlines
+    
+    # 2. Skeletonize (Centerline logic)
     skel = skeletonize(edges > 0)
     skel_img = (skel * 255).astype(np.uint8)
     
-    # 3. VISUAL PREVIEW
+    # 3. Vector Smoothing Logic
+    contours, _ = cv2.findContours(skel_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    
     st.subheader("V-Bit Engraving Preview")
-    preview = cv2.bitwise_not(skel_img) # Black lines on white
-    st.image(preview, use_column_width=True)
+    # Draw the smooth lines for the preview
+    preview_canvas = np.ones_like(img) * 255
+    
+    h, w = img.shape
+    svg_paths = ""
+    
+    for c in contours:
+        if len(c) > min_path:
+            # APPROXIMATE POLYGON: This is the secret to smooth lines
+            # Higher epsilon = smoother, simpler curves
+            epsilon = smooth_factor * cv2.arcLength(c, False) / 100
+            approx = cv2.approxPolyDP(c, epsilon, False)
+            
+            # Draw for preview
+            cv2.polylines(preview_canvas, [approx], False, (0, 0, 0), 1)
+            
+            # Build SVG path
+            path_str = "M " + " L ".join([f"{p[0][0]},{p[0][1]}" for p in approx])
+            svg_paths += f'  <path d="{path_str}" fill="none" stroke="black" stroke-width="0.5" stroke-linecap="round"/>\n'
 
-    # 4. EXPORT TO SVG (The format you need for ArtCAM)
-    if st.button("🚀 Generate V-Bit Vector (SVG)"):
-        contours, _ = cv2.findContours(skel_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        
-        h, w = img.shape
-        svg_data = f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">\n'
-        
-        for c in contours:
-            if len(c) > min_path:
-                # Build the path string for the V-bit to follow
-                path_str = "M " + " L ".join([f"{p[0][0]},{p[0][1]}" for p in c])
-                svg_data += f'  <path d="{path_str}" fill="none" stroke="black" stroke-width="1" stroke-linecap="round"/>\n'
-        
+    st.image(preview_canvas, use_column_width=True)
+
+    # 4. Final SVG Export
+    if st.button("🚀 Download Smooth SVG"):
+        svg_data = f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision">\n'
+        svg_data += svg_paths
         svg_data += "</svg>"
         
-        st.success("Vector Art Created!")
         st.download_button(
-            label="📥 Download SVG for CNC",
+            label="📥 Download SVG for ArtCAM",
             data=svg_data,
-            file_name="vbit_portrait_lineart.svg",
+            file_name="smooth_vbit_portrait.svg",
             mime="image/svg+xml"
         )
         
