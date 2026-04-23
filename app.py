@@ -1,68 +1,43 @@
-import streamlit as st
-import numpy as np
 import cv2
-from PIL import Image
-from skimage.morphology import skeletonize
-import io
+import numpy as np
 
-st.set_page_config(page_title="V-Bit Portrait Master", layout="centered")
+def generate_cnc_engraving(image_path, line_spacing=10, contrast_boost=1.5):
+    # 1. Load image and convert to Grayscale
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return "Error: Image not found."
 
-st.title("🎯 CNC V-Bit Line Art Generator")
-st.write("Target: Connected, flowing paths for professional engraving.")
+    # 2. Enhance Contrast (CNC looks better with deep blacks and bright whites)
+    # Applying simple linear scaling for high contrast
+    img = cv2.convertScaleAbs(img, alpha=contrast_boost, beta=0)
+    
+    height, width = img.shape
+    # Create a blank white canvas for the output
+    output = np.full((height, width), 255, dtype=np.uint8)
 
-uploaded_file = st.file_uploader("Upload Portrait", type=["jpg", "jpeg", "png"])
-
-if uploaded_file:
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-    
-    st.sidebar.header("Tuning")
-    thresh_val = st.sidebar.slider("Line Boldness", 30, 200, 100)
-    smooth_factor = st.sidebar.slider("Path Smoothness", 0.5, 8.0, 3.5)
-    min_path_len = st.sidebar.slider("Delete Tiny Paths", 50, 1000, 300)
-
-    # --- THE ARTISTIC PIPELINE ---
-    # 1. MEDIAN BLUR: Deletes noise but keeps edge sharpness
-    clean = cv2.medianBlur(img, 5)
-    
-    # 2. ADAPTIVE THRESHOLD: Handles shadows better than a standard threshold
-    binary = cv2.adaptiveThreshold(clean, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                   cv2.THRESH_BINARY_INV, 11, 2)
-    
-    # 3. CONNECT GAPS: Bridges tiny breaks in the lines
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    
-    # 4. SKELETONIZE: Collapse to single-pixel centerline
-    skel = skeletonize(binary > 0)
-    skel_img = (skel * 255).astype(np.uint8)
-    
-    # 5. VECTORIZE & SMOOTH
-    contours, _ = cv2.findContours(skel_img, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    
-    h, w = img.shape
-    preview_canvas = np.ones_like(img) * 255
-    svg_paths = ""
-    
-    for c in contours:
-        if len(c) > min_path_len:
-            # DOUGLAS-PEUCKER SMOOTHING
-            epsilon = (smooth_factor / 100.0) * cv2.arcLength(c, False)
-            approx = cv2.approxPolyDP(c, epsilon, False)
-            
-            # Draw for preview
-            cv2.polylines(preview_canvas, [approx], False, (0, 0, 0), 1)
-            
-            # Build SVG path
-            path_str = "M " + " L ".join([f"{p[0][0]},{p[0][1]}" for p in approx])
-            svg_paths += f'  <path d="{path_str}" fill="none" stroke="black" stroke-width="0.8" stroke-linecap="round"/>\n'
-
-    st.subheader("V-Bit Toolpath Preview")
-    st.image(preview_canvas, use_column_width=True)
-
-    if st.button("🚀 Export Final SVG"):
-        svg_header = f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">\n'
-        svg_data = svg_header + svg_paths + "</svg>"
+    # 3. Iterate through the image in steps of 'line_spacing'
+    for x in range(0, width, line_spacing):
+        # Sample the column of the original image
+        column_pixels = img[:, x]
         
-        st.download_button("📥 Download Final Smooth SVG", svg_data, "vbit_masterpiece.svg", "image/svg+xml")
+        # Calculate thickness: (255 - brightness) / 255 
+        # Darker (0) = thicker line. Lighter (255) = thinner line.
+        thicknesses = (255 - column_pixels).astype(float) / 255.0
         
+        # 4. Draw the vertical line with varying width
+        for y in range(height):
+            # Calculate half-width based on thickness and spacing
+            # We multiply by line_spacing to ensure lines can touch in dark areas
+            half_w = int((thicknesses[y] * line_spacing) / 2)
+            
+            if half_w > 0:
+                # Fill pixels around the center 'x' to create the line
+                start_x = max(0, x - half_w)
+                end_x = min(width - 1, x + half_w)
+                output[y, start_x:end_x] = 0 # Set to Black
+
+    return output
+
+# --- Implementation ---
+result = generate_cnc_engraving('marilyn_source.jpg', line_spacing=8, contrast_boost=1.8)
+cv2.imwrite('cnc_ready_art.png', result)
