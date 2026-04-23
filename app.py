@@ -1,85 +1,56 @@
-import streamlit as st
-import cv2
-import numpy as np
-from PIL import Image
-import io
-import math
-
-# --- PROCESSING ENGINE WITH SUPER-SAMPLING ---
-def generate_smooth_cnc_art(img_array, style, spacing, weight, contrast):
-    # 1. Prepare base image
+def create_dxf_data(img_array, style, spacing, weight, contrast):
+    doc = ezdxf.new('R2010')
+    msp = doc.modelspace()
+    
     img = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     img = cv2.convertScaleAbs(img, alpha=contrast, beta=0)
     h, w = img.shape
-    
-    # 2. Super-Sampling: Create a canvas 4x larger for ultra-smooth edges
-    upscale = 4
-    h_up, w_up = h * upscale, w * upscale
-    output_up = np.full((h_up, w_up), 255, dtype=np.uint8)
-    
-    center_up = (w_up // 2, h_up // 2)
-    up_spacing = spacing * upscale
+    scale = 0.1 # Adjust for real-world mm size
 
     if style == "Vertical":
-        for x in range(0, w_up, up_spacing):
-            # Sample from the original small image to find thickness
-            orig_x = min(x // upscale, w - 1)
-            column_img = img[:, orig_x]
-            
-            for y_orig in range(h):
-                thickness = ((255 - column_img[y_orig]) / 255) * (up_spacing / 2) * weight
-                t = int(thickness)
-                if t > 0:
-                    y_up = y_orig * upscale
-                    # Draw a smooth rectangle for the segment
-                    cv2.rectangle(output_up, (x - t, y_up), (x + t, y_up + upscale), 0, -1)
+        for x in range(0, w, spacing):
+            points = []
+            for y in range(0, h, 2): # Sampling every 2 pixels for smoothness
+                b = img[y, x]
+                # Calculate thickness/offset
+                t = ((255 - b) / 255) * (spacing / 2) * weight
+                if t > 0.5:
+                    # We create a path that "wiggles" or widens
+                    points.append((x * scale + (t*scale), (h-y) * scale))
+            if len(points) > 1:
+                msp.add_lwpolyline(points)
 
     elif style == "Circles":
-        max_r = int(math.sqrt(w_up**2 + h_up**2) / 2)
-        for r in range(up_spacing, max_r, up_spacing):
-            # Higher number of steps for the larger canvas
-            steps = int(2 * math.pi * r / 2) 
-            for i in range(steps):
+        center = (w // 2, h // 2)
+        max_r = int(math.sqrt(w**2 + h**2) / 2)
+        for r in range(spacing, max_r, spacing):
+            points = []
+            steps = int(2 * math.pi * r / 2) # High precision sampling
+            for i in range(steps + 1):
                 angle = (i / steps) * 2 * math.pi
-                x = int(center_up[0] + r * math.cos(angle))
-                y = int(center_up[1] + r * math.sin(angle))
+                px = center[0] + r * math.cos(angle)
+                py = center[1] + r * math.sin(angle)
                 
-                # Check bounds on original image for brightness
-                orig_x, orig_y = min(x // upscale, w-1), min(y // upscale, h-1)
-                if 0 <= orig_x < w and 0 <= orig_y < h:
-                    b = img[orig_y, orig_x]
-                    t = int(((255 - b) / 255) * (up_spacing / 2) * weight)
-                    if t > 0:
-                        cv2.circle(output_up, (x, y), t, 0, -1)
+                if 0 <= int(px) < w and 0 <= int(py) < h:
+                    b = img[int(py), int(px)]
+                    # Instead of a circle at every point, we vary the radius slightly
+                    # to create a "sculpted" vector line
+                    t = ((255 - b) / 255) * (spacing / 4) * weight
+                    adjusted_r = r + t
+                    points.append(((center[0] + adjusted_r * math.cos(angle)) * scale, 
+                                   (h - (center[1] + adjusted_r * math.sin(angle))) * scale))
+            if len(points) > 1:
+                msp.add_lwpolyline(points, dxfattribs={'closed': True})
 
-    # 3. Downscale with Area Interpolation to "Anti-Alias" the pixels
-    # This creates smooth gray edges that CNC lasers/software read as smooth curves
-    final_raster = cv2.resize(output_up, (w, h), interpolation=cv2.INTER_AREA)
-    
-    return final_raster, output_up
+    elif style == "Dots":
+        for y in range(0, h, spacing):
+            for x in range(0, w, spacing):
+                b = img[y, x]
+                r = ((255 - b) / 255) * (spacing / 2) * weight
+                if r > 0.5:
+                    msp.add_circle((x * scale, (h-y) * scale), radius=r * scale)
 
-# --- UI LOGIC ---
-st.title("🚀 High-Precision CNC Designer")
-
-# ... (Insert sliders here: style_choice, line_density, line_weight, img_contrast)
-
-if uploaded_file:
-    image = Image.open(uploaded_file)
-    img_np = np.array(image)
-    
-    # Generate images
-    preview, hd_raw = generate_smooth_cnc_art(img_np, style_choice, line_density, line_weight, img_contrast)
-    
-    st.image(preview, caption="Smooth Anti-Aliased Preview", use_container_width=True)
-
-    # Export HD PNG
-    st.write("### 📥 Export Ultra-HD File")
-    # Using the upscaled raw image for the PNG download to keep maximum detail
-    ret, png_buf = cv2.imencode(".png", hd_raw)
-    st.download_button(
-        label="Download 4K PNG (For Smooth CNC Path)",
-        data=png_buf.tobytes(),
-        file_name="cnc_ultra_hd.png",
-        mime="image/png"
-    )
+    out_str = io.StringIO()
+    doc.write(out_str)
+    return out_str.getvalue()
     
