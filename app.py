@@ -1,61 +1,74 @@
-import cv2
+ import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
+import ezdxf
+import io
 
-def generate_cnc_engraving(img_array, line_spacing=10, contrast_boost=1.5):
-    # 1. Convert the uploaded PIL image to a Grayscale NumPy array
-    img = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-
-    # 2. Enhance Contrast
-    img = cv2.convertScaleAbs(img, alpha=contrast_boost, beta=0)
+def create_dxf(img_array, style, spacing, thickness_mult, contrast):
+    # Setup DXF document
+    doc = ezdxf.new('R2010')
+    msp = doc.modelspace()
     
-    height, width = img.shape
-    output = np.full((height, width), 255, dtype=np.uint8)
+    # Process image
+    img = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    img = cv2.convertScaleAbs(img, alpha=contrast, beta=0)
+    h, w = img.shape
+    
+    # Scale factor to keep DXF coordinates manageable (e.g., mm)
+    scale = 0.1 
 
-    # 3. Algorithm: Variable-width vertical lines
-    for x in range(0, width, line_spacing):
-        column_pixels = img[:, x]
-        # Darker pixels = thicker lines
-        thicknesses = (255 - column_pixels).astype(float) / 255.0
+    if style == "Vertical":
+        for x in range(0, w, spacing):
+            for y in range(0, h, 2): # Step 2 for performance
+                brightness = img[y, x]
+                # Map brightness to line thickness
+                t = ((255 - brightness) / 255) * (spacing / 2) * thickness_mult
+                if t > 0.1:
+                    # Create a thin rectangle (box) to represent the variable line
+                    # CNCs usually treat these as "pockets" or "fills"
+                    p1 = (x * scale - t*scale, (h-y) * scale)
+                    p2 = (x * scale + t*scale, (h-y) * scale)
+                    msp.add_line(p1, p2)
+
+    elif style == "Dots":
+        for y in range(0, h, spacing):
+            for x in range(0, w, spacing):
+                brightness = img[y, x]
+                r = ((255 - brightness) / 255) * (spacing / 2) * thickness_mult
+                if r > 0.5:
+                    msp.add_circle((x * scale, (h-y) * scale), radius=r*scale)
+
+    # Save to a byte stream
+    dxf_stream = io.StringIO()
+    doc.write(dxf_stream)
+    return dxf_stream.getvalue()
+
+def create_tiff(img_array):
+    # Convert numpy array to PIL and save as TIFF
+    # Use '1' for 1-bit (strict B&W) or 'L' for grayscale
+    pil_img = Image.fromarray(img_array)
+    img_byte_arr = io.BytesIO()
+    pil_img.save(img_byte_arr, format='TIFF', compression='tiff_lzw')
+    return img_byte_arr.getvalue()
+
+# --- Streamlit UI Additions ---
+
+if st.button('Process Design'):
+    # Generate the raster image for preview
+    final_raster = generate_cnc_art(img_array, style_choice, line_spacing, weight, contrast_val)
+    st.image(final_raster, caption="Preview")
+
+    # Column layout for downloads
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Download TIFF (Best for Laser/Engraving software like LightBurn)
+        tiff_data = create_tiff(final_raster)
+        st.download_button("Download TIFF", tiff_data, "cnc_art.tiff", "image/tiff")
         
-        for y in range(height):
-            half_w = int((thicknesses[y] * line_spacing) / 2)
-            if half_w > 0:
-                start_x = max(0, x - half_w)
-                end_x = min(width - 1, x + half_w)
-                output[y, start_x:end_x] = 0 
-
-    return output
-
-# --- Streamlit UI ---
-st.title("CNC Art Generator")
-
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
-    # Load the image
-    image = Image.open(uploaded_file)
-    img_array = np.array(image)
-
-    # Sidebar controls for real-time adjustment
-    spacing = st.sidebar.slider("Line Spacing (Density)", 2, 20, 8)
-    contrast = st.sidebar.slider("Contrast Boost", 1.0, 3.0, 1.8)
-
-    if st.button('Generate CNC Pattern'):
-        with st.spinner('Processing...'):
-            # Run the processing function
-            result_img = generate_cnc_engraving(img_array, spacing, contrast)
-            
-            # Display the result
-            st.image(result_img, caption='Engraving-Ready Image', use_column_width=True)
-            
-            # Allow user to download the result (instead of saving to server)
-            res, im_png = cv2.imencode(".png", result_img)
-            st.download_button(
-                label="Download PNG for CNC",
-                data=im_png.tobytes(),
-                file_name="cnc_art.png",
-                mime="image/png"
-            )
-            
+    with col2:
+        # Download DXF (Best for Routers/Plotters like AutoCAD, VCarve)
+        dxf_string = create_dxf(img_array, style_choice, line_spacing, weight, contrast_val)
+        st.download_button("Download DXF", dxf_string, "cnc_art.dxf", "application/dxf")
+        
