@@ -8,98 +8,108 @@ import math
 
 st.set_page_config(page_title="CNC Vector Studio", layout="wide")
 
-# --- 1. CORE MATH FUNCTIONS ---
-def get_processed_img(img_array, contrast):
-    img = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    return cv2.convertScaleAbs(img, alpha=contrast, beta=0)
-
-# --- 2. VECTOR ENGINE (DXF) ---
-def create_dxf_data(img, style, spacing, weight):
-    doc = ezdxf.new('R2010')
-    msp = doc.modelspace()
+# --- 1. CORE PROCESSING ---
+def generate_art(img, style, spacing, weight):
     h, w = img.shape
-    scale = 0.1 
+    # Create a fresh white canvas for every generation
+    canvas = np.full((h, w), 255, dtype=np.uint8)
     center = (w // 2, h // 2)
 
     if style == "Vertical":
         for x in range(0, w, spacing):
-            points = [( (x + (((255 - img[y, x])/255)*(spacing/2)*weight)) * scale, (h-y)*scale ) 
-                      for y in range(0, h, 4)]
-            if len(points) > 1: msp.add_lwpolyline(points)
+            # Sample every few pixels for speed
+            for y in range(0, h, 2):
+                brightness = img[y, x]
+                # Map darkness to thickness
+                t = int(((255 - brightness) / 255) * (spacing / 2) * weight)
+                if t > 0:
+                    cv2.line(canvas, (x, y), (x + t, y), 0, 1)
 
     elif style == "Spiral":
         max_r = int(math.sqrt(w**2 + h**2) / 2)
-        b_val = spacing / (2 * math.pi)
-        angle, points = 0.0, []
+        b_spiral = spacing / (2 * math.pi)
+        angle = 0.0
         while True:
-            r = b_val * angle
+            r = b_spiral * angle
             if r > max_r: break
-            px, py = int(center[0] + r * math.cos(angle)), int(center[1] + r * math.sin(angle))
-            if 0 <= px < w and 0 <= py < h:
-                t = ((255 - img[py, px]) / 255) * (spacing / 4) * weight
-                points.append(((center[0] + (r + t) * math.cos(angle)) * scale, (h - (center[1] + (r + t) * math.sin(angle))) * scale))
-            angle += 0.2 # Increased step for speed
-        if len(points) > 1: msp.add_lwpolyline(points)
+            x = int(center[0] + r * math.cos(angle))
+            y = int(center[1] + r * math.sin(angle))
+            if 0 <= x < w and 0 <= y < h:
+                t = int(((255 - img[y, x]) / 255) * (spacing / 4) * weight)
+                if t > 0: cv2.circle(canvas, (x, y), t, 0, -1)
+            angle += 0.1 # Large steps for faster loading
 
     elif style == "Circles":
         max_r = int(math.sqrt(w**2 + h**2) / 2)
         for r in range(spacing, max_r, spacing):
-            points = []
-            steps = int(2 * math.pi * r / 5) # Optimized step
-            for i in range(steps + 1):
+            steps = int(2 * math.pi * r / 5)
+            for i in range(steps):
                 angle = (i / steps) * 2 * math.pi
-                px, py = int(center[0] + r * math.cos(angle)), int(center[1] + r * math.sin(angle))
-                if 0 <= px < w and 0 <= py < h:
-                    t = ((255 - img[py, px]) / 255) * (spacing / 4) * weight
-                    points.append(((center[0] + (r+t)*math.cos(angle))*scale, (h-(center[1] + (r+t)*math.sin(angle)))*scale))
-            if len(points) > 1: msp.add_lwpolyline(points, dxfattribs={'closed': True})
+                x, y = int(center[0] + r * math.cos(angle)), int(center[1] + r * math.sin(angle))
+                if 0 <= x < w and 0 <= y < h:
+                    t = int(((255 - img[y, x]) / 255) * (spacing / 4) * weight)
+                    if t > 0: cv2.circle(canvas, (x, y), t, 0, -1)
 
     elif style == "Dots":
         for y in range(0, h, spacing):
             for x in range(0, w, spacing):
-                r = ((255 - img[y, x]) / 255) * (spacing / 2) * weight
-                if r > 0.5: msp.add_circle((x * scale, (h - y) * scale), radius=r * scale)
+                r = int(((255 - img[y, x]) / 255) * (spacing / 2) * weight)
+                if r > 0: cv2.circle(canvas, (x, y), r, 0, -1)
 
-    out_str = io.StringIO()
-    doc.write(out_str)
-    return out_str.getvalue()
+    return canvas
 
-# --- 3. UI LAYOUT ---
-st.title("🚀 High-Speed CNC Engine")
+# --- 2. UI LAYOUT ---
+st.title("🚀 CNC Style Engine")
 
-# Move settings to a container to prevent accidental refreshes
-with st.container():
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: style_choice = st.selectbox("Design Style", ["Vertical", "Spiral", "Circles", "Dots"])
-    with c2: space = st.slider("Spacing", 5, 50, 15)
-    with c3: thick = st.slider("Weight", 0.5, 3.0, 1.2)
-    with c4: cont = st.slider("Contrast", 1.0, 3.0, 1.5)
+# Use a form to prevent the app from re-running on every slider move
+with st.sidebar:
+    st.header("Settings")
+    style_choice = st.selectbox("Pattern", ["Vertical", "Spiral", "Circles", "Dots"])
+    space = st.slider("Spacing", 5, 40, 15)
+    thick = st.slider("Thickness", 0.5, 3.0, 1.2)
+    cont = st.slider("Image Contrast", 1.0, 3.0, 1.5)
+    generate_btn = st.button("Apply & Generate")
 
 uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
 
 if uploaded_file:
-    # 1. Load and process
-    raw_img = Image.open(uploaded_file)
-    # Resize for preview speed (Crucial for performance!)
-    raw_img.thumbnail((800, 800)) 
-    img_np = np.array(raw_img)
-    processed = get_processed_img(img_np, cont)
+    # Load and downscale immediately for speed
+    raw_pil = Image.open(uploaded_file)
+    raw_pil.thumbnail((1000, 1000)) 
     
-    # 2. Display Preview
-    st.image(processed, caption="Source Preview (Adjust Contrast)", width=400)
-    
-    if st.button("Generate Final CNC Files"):
-        with st.spinner("Processing High-Resolution Vectors..."):
-            dxf_out = create_dxf_data(processed, style_choice, space, thick)
-            
-            # Create a simple representation for PNG
-            ret, png_buf = cv2.imencode(".png", processed)
-            
-            st.success("Generation Complete!")
-            
-            b1, b2 = st.columns(2)
-            with b1:
-                st.download_button("💾 Download DXF (Smooth Path)", dxf_out, "cnc_vector.dxf", "application/dxf")
-            with b2:
-                st.download_button("🖼️ Download PNG", png_buf.tobytes(), "cnc_raster.png", "image/png")
+    # Convert to Grayscale + Contrast
+    img_np = np.array(raw_pil.convert('L'))
+    img_np = cv2.convertScaleAbs(img_np, alpha=cont, beta=0)
+
+    # Show original preview
+    st.image(img_np, caption="Adjusted Source", width=300)
+
+    if generate_btn:
+        with st.spinner("Creating CNC Pattern..."):
+            result = generate_art(img_np, style_choice, space, thick)
+            st.image(result, caption=f"Result: {style_choice}", use_container_width=True)
+
+            # Export Buttons
+            st.write("### 📥 Download Files")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                _, png = cv2.imencode(".png", result)
+                st.download_button("Download PNG", png.tobytes(), "cnc.png", "image/png")
+            with c2:
+                _, tif = cv2.imencode(".tif", result)
+                st.download_button("Download TIFF", tif.tobytes(), "cnc.tif", "image/tiff")
+            with c3:
+                # Basic DXF export
+                doc = ezdxf.new()
+                msp = doc.modelspace()
+                # For circles/dots
+                if style_choice == "Dots":
+                    for y in range(0, img_np.shape[0], space):
+                        for x in range(0, img_np.shape[1], space):
+                            r = ((255 - img_np[y, x])/255) * (space/2) * thick
+                            if r > 0.5: msp.add_circle((x*0.1, -y*0.1), r*0.1)
                 
+                dxf_io = io.StringIO()
+                doc.write(dxf_io)
+                st.download_button("Download DXF", dxf_io.getvalue(), "cnc.dxf", "application/dxf")
+    
