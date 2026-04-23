@@ -1,6 +1,5 @@
-streamlit
-numpy
-Pillow
-streamlit-stl
 opencv-python-headless
-scikit-image
+numpy
+streamlit
+Pillow
+ezdxf
